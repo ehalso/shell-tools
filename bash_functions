@@ -107,7 +107,11 @@ copyclipboard() {
   local out
   out=$(cat)
   echo "$out"
-  echo "$out" | clip.exe
+  if grep -qi microsoft /proc/version 2>/dev/null; then
+    echo "$out" | clip.exe
+  else
+    printf '\033]52;c;%s\a' "$(echo "$out" | base64 -w 0)"
+  fi
 }
 
 # @desc Comandos GCP de referencia rápida
