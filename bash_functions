@@ -1,6 +1,6 @@
 # @desc Muestra las funciones personalizadas disponibles
 helpme() {
-  grep -B1 '^[a-zA-Z0-9_-]*() {$' ~/.bash_functions | awk -v aliasfile="$HOME/.bash_aliases" '
+  grep -B1 '^[a-zA-Z0-9_-]*() {$' ~/.dotfiles/bash_functions | awk -v aliasfile="$HOME/.dotfiles/bash_aliases" '
     BEGIN {
       while ((getline line < aliasfile) > 0) {
         if (match(line, /^alias ([a-zA-Z0-9_-]+)='"'"'([a-zA-Z0-9_-]+)'"'"'/, arr)) {
