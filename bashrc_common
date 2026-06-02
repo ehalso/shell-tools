@@ -1,0 +1,8 @@
+# Dotfiles compartidos
+if [ -f ~/.dotfiles/bash_functions ]; then
+    source ~/.dotfiles/bash_functions
+fi
+
+if [ -f ~/.dotfiles/bash_aliases ]; then
+    source ~/.dotfiles/bash_aliases
+fi
