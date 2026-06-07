@@ -109,6 +109,8 @@ copyclipboard() {
   echo "$out"
   if grep -qi microsoft /proc/version 2>/dev/null; then
     echo "$out" | clip.exe
+  elif [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ]; then
+    echo "$out" | xclip -selection clipboard
   else
     printf '\033]52;c;%s\a' "$(echo "$out" | base64 -w 0)"
   fi
@@ -143,3 +145,4 @@ GCPEOF
     *) echo "Opción no válida" ;;
   esac
 }
+
