@@ -6,3 +6,4 @@ fi
 if [ -f ~/.dotfiles/bash_aliases ]; then
     source ~/.dotfiles/bash_aliases
 fi
+[ -f ~/.secrets.local ] && source ~/.secrets.local

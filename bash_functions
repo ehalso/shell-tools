@@ -108,7 +108,7 @@ copyclipboard() {
   out=$(cat)
   echo "$out"
   if grep -qi microsoft /proc/version 2>/dev/null; then
-    echo "$out" | clip.exe
+    echo "$out" | iconv -t UTF-16LE | clip.exe
   elif [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ]; then
     echo "$out" | xclip -selection clipboard
   else
