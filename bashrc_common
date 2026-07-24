@@ -7,3 +7,7 @@ if [ -f ~/.dotfiles/bash_aliases ]; then
     source ~/.dotfiles/bash_aliases
 fi
 [ -f ~/.secrets.local ] && source ~/.secrets.local
+
+# Trivasa BI — permite importar connection.py / connection_207.py /
+# connection_200_trivasadb3.py desde cualquier subcarpeta del proyecto
+export PYTHONPATH="$HOME/trivasa-bi-dev:$PYTHONPATH"
