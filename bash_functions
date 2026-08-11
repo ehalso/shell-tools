@@ -3,8 +3,12 @@ helpme() {
   grep -B1 '^[a-zA-Z0-9_-]*() {$' ~/.dotfiles/bash_functions | awk -v aliasfile="$HOME/.dotfiles/bash_aliases" '
     BEGIN {
       while ((getline line < aliasfile) > 0) {
-        if (match(line, /^alias ([a-zA-Z0-9_-]+)='"'"'([a-zA-Z0-9_-]+)'"'"'/, arr)) {
-          aliases[arr[2]] = arr[1]
+        if (line ~ /^alias [a-zA-Z0-9_-]+='"'"'[a-zA-Z0-9_-]+'"'"'$/) {
+          eq = index(line, "=")
+          name = substr(line, 7, eq - 7)
+          rest = substr(line, eq + 1)
+          val = substr(rest, 2, length(rest) - 2)
+          aliases[val] = name
         }
       }
     }
