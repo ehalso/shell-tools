@@ -146,3 +146,12 @@ GCPEOF
   esac
 }
 
+
+# Redirige "claude" a claude-scratch si se corre desde el home
+claude() {
+    if [[ "$PWD" == "$HOME" ]]; then
+        cd "$HOME/claude-scratch" && command claude "$@"
+    else
+        command claude "$@"
+    fi
+}
