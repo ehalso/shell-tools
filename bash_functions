@@ -161,3 +161,40 @@ claude() {
         command claude "$@"
     fi
 }
+
+# @desc Lista conexiones Harlequin o abre la seleccionada (por numero o nombre)
+harlequin-connection() {
+  local conn_file="$HOME/.config/harlequin/connections"
+
+  if [ ! -f "$conn_file" ]; then
+    echo "No existe $conn_file — no hay conexiones configuradas." >&2
+    return 1
+  fi
+
+  local entries=($(grep -v '^#' "$conn_file" | grep -v '^\s*$' | awk -F'=' '{print $1}'))
+
+  if [ -z "$1" ]; then
+    echo "Conexiones disponibles:"
+    for i in "${!entries[@]}"; do
+      echo "  $((i+1))) ${entries[$i]}"
+    done
+    return
+  fi
+
+  local selected=""
+  if [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le "${#entries[@]}" ]; then
+    selected="${entries[$(($1 - 1))]}"
+  else
+    selected="$1"
+  fi
+
+  local conn
+  conn="$(grep -v '^#' "$conn_file" | grep "^${selected}=" | cut -d'=' -f2-)"
+
+  if [ -z "$conn" ]; then
+    echo "Conexión no encontrada: $1" >&2
+    return 1
+  fi
+
+  harlequin -a odbc "$conn"
+}
