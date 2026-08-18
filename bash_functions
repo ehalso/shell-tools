@@ -198,3 +198,69 @@ harlequin-connection() {
 
   harlequin -a odbc "$conn"
 }
+
+# @desc Corre una query en modo vertical (registro por registro) usando una conexion guardada
+#
+# Uso:
+#   harlequin-vertical                                              lista las conexiones disponibles
+#   harlequin-vertical <conexion|numero> "<query>" [limit]           corre una query inline (limit default: 1)
+#   harlequin-vertical <conexion|numero> -f archivo.sql [limit]      corre una query desde archivo
+#
+# Ejemplos:
+#   hv
+#   hv trivasadb3-205 "SELECT TOP 1 * FROM Orden_Compra ORDER BY Oc_Fecha DESC"
+#   hv 1 "SELECT * FROM Orden_Compra WHERE Cm_Cve_Comprador = '0004'" 5
+#   hv trivasadb3-205 -f mi_query.sql
+#
+# Lee las conexiones de ~/.config/harlequin/connections (mismo archivo que harlequin-connection).
+harlequin-vertical() {
+  local conn_file="$HOME/.config/harlequin/connections"
+
+  if [ ! -f "$conn_file" ]; then
+    echo "No existe $conn_file — no hay conexiones configuradas." >&2
+    return 1
+  fi
+
+  if [ -z "$1" ]; then
+    echo "Uso: harlequin-vertical <conexion> <query | -f archivo.sql> [limit]"
+    echo ""
+    echo "Conexiones disponibles:"
+    local entries=($(grep -v '^#' "$conn_file" | grep -v '^\s*$' | awk -F'=' '{print $1}'))
+    for i in "${!entries[@]}"; do
+      echo "  $((i+1))) ${entries[$i]}"
+    done
+    return
+  fi
+
+  local conn_name="$1"
+  shift
+
+  local entries=($(grep -v '^#' "$conn_file" | grep -v '^\s*$' | awk -F'=' '{print $1}'))
+  local selected=""
+  if [[ "$conn_name" =~ ^[0-9]+$ ]] && [ "$conn_name" -ge 1 ] && [ "$conn_name" -le "${#entries[@]}" ]; then
+    selected="${entries[$(($conn_name - 1))]}"
+  else
+    selected="$conn_name"
+  fi
+
+  local conn
+  conn="$(grep -v '^#' "$conn_file" | grep "^${selected}=" | cut -d'=' -f2-)"
+
+  if [ -z "$conn" ]; then
+    echo "Conexión no encontrada: $conn_name" >&2
+    return 1
+  fi
+
+  local limit=1
+  local query_args=()
+
+  if [ "$1" = "-f" ]; then
+    query_args=(-f "$2")
+    limit="${3:-1}"
+  else
+    query_args=(-c "$1")
+    limit="${2:-1}"
+  fi
+
+  hsql -a odbc "$conn" --limit "$limit" --vertical "${query_args[@]}"
+}
