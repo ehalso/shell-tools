@@ -1,0 +1,373 @@
+#!/usr/bin/env python3
+"""ipadctl - controla el iPad Air 1 (iOS 12.5.7, jailbreak Amethyst) por SSH.
+
+Piezas en el iPad: ZXTouch (toques, puerto 6000 local), Activator (home / unlock)
+y uiopen (abrir URLs). La pantalla se ve por AirPlay con UxPlay corriendo en WSL
+(sin ventana: guarda el ultimo fotograma como JPEG).
+
+Las coordenadas de tap/swipe se dan por defecto como se ven en la imagen de
+`ipadctl shot`; el script las convierte a las de ZXTouch segun la orientacion.
+
+Configuracion por entorno: IPAD_HOST (obligatorio), IPAD_USER (def. root).
+Credenciales: IPAD_SSH_PASS en el entorno, o un secreto de Infisical con ese nombre
+(proyecto en IPADCTL_INFISICAL_PROJECT, def. "Estebanalcocer.cloud"; env "prod").
+Nunca se guardan en este archivo.
+"""
+import argparse
+import json
+import os
+import pathlib
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+
+HOST = os.environ.get("IPAD_HOST") or sys.exit("Define IPAD_HOST (IP o nombre del iPad).")
+USER = os.environ.get("IPAD_USER", "root")
+INFISICAL_PROJECT = os.environ.get("IPADCTL_INFISICAL_PROJECT", "Estebanalcocer.cloud")
+STATE = pathlib.Path(os.environ.get("IPADCTL_DIR", pathlib.Path.home() / ".cache" / "ipadctl"))
+FRAME = STATE / "frame.jpg"
+MIRROR_NAME = os.environ.get("IPADCTL_MIRROR_NAME", "WSL-UxPlay")
+CONTROL_DIR = pathlib.Path.home() / ".cache" / "ipadctl"   # corto: limite de ~108 chars del socket
+CONTROL_PATH = str(CONTROL_DIR / "cm-%C")
+
+# Codigo que se ejecuta DENTRO del iPad (python 3.7 + cliente zxtouch)
+REMOTE_ZX = r'''
+import sys, json, time
+sys.path.insert(0, "/usr/lib/python3.7/site-packages")
+req = json.loads(sys.argv[1])
+try:
+    from zxtouch.client import zxtouch
+    d = zxtouch("127.0.0.1")
+except Exception as e:
+    print(json.dumps({"error": "zxtouch", "detail": str(e)}))
+    sys.exit(3)
+
+def geom():
+    ok, s = d.get_screen_size()
+    W = int(float(s["width"])); H = int(float(s["height"]))
+    ok, o = d.get_screen_orientation()
+    return W, H, int(o)
+
+def conv(p, W, H, o):
+    space = req.get("space", "frame")
+    if space == "raw":
+        return p
+    landscape = o in (3, 4)
+    if space == "norm":
+        vw, vh = (H, W) if landscape else (W, H)
+        u, v = p[0] * vw, p[1] * vh
+    else:
+        sc = (H if landscape else W) / float(req["fw"])
+        u, v = p[0] * sc, p[1] * sc
+    if o == 1: return (u, v)
+    if o == 2: return (W - u, H - v)
+    if o == 4: return (v, H - u)      # verificado
+    if o == 3: return (W - v, u)      # deducido, sin verificar
+    raise SystemExit("orientacion no soportada: %d" % o)
+
+op = req["op"]
+W, H, o = geom()
+out = {"orientation": o, "screen": [W, H]}
+if op == "info":
+    out["battery"] = d.get_battery_info()[1]
+    out["device"] = d.get_device_info()[1]
+elif op == "tap":
+    x, y = conv(req["p"], W, H, o)
+    d.touch(1, 3, x, y)                       # TOUCH_DOWN
+    time.sleep(req.get("hold", 0.08))
+    d.touch(0, 3, x, y)                       # TOUCH_UP
+    out["raw"] = [round(x, 1), round(y, 1)]
+elif op == "swipe":
+    x1, y1 = conv(req["p1"], W, H, o)
+    x2, y2 = conv(req["p2"], W, H, o)
+    steps = max(8, int(req["dur"] / 0.016))
+    d.touch(1, 3, x1, y1)
+    time.sleep(0.05)
+    for i in range(1, steps + 1):
+        t = i / float(steps)
+        d.touch(2, 3, x1 + (x2 - x1) * t, y1 + (y2 - y1) * t)   # TOUCH_MOVE
+        time.sleep(req["dur"] / steps)
+    d.touch(0, 3, x2, y2)
+    out["raw"] = [[round(x1, 1), round(y1, 1)], [round(x2, 1), round(y2, 1)]]
+d.disconnect()
+print(json.dumps(out))
+'''
+
+
+def log(msg):
+    print(msg, file=sys.stderr)
+
+
+def get_password():
+    pw = os.environ.get("IPAD_SSH_PASS")
+    if pw:
+        return pw
+    cfg = pathlib.Path.home() / ".config" / "infisical"
+    try:   # cache de proyectos (skill infisical): [{"name": ..., "projectId": ...}]
+        pid = next(p["projectId"] for p in json.loads((cfg / "projects.json").read_text())
+                   if p["name"] == INFISICAL_PROJECT)
+    except (OSError, ValueError, StopIteration):
+        sys.exit(f"No encontre el proyecto '{INFISICAL_PROJECT}' en {cfg / 'projects.json'}; "
+                 "exporta IPAD_SSH_PASS.")
+    cmd = (f"source {shlex.quote(str(cfg / '.env'))} && infisical secrets get IPAD_SSH_PASS "
+           f"--env prod --projectId {pid} --plain 2>/dev/null")
+    p = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True)
+    lines = [l for l in p.stdout.splitlines() if l.strip()]
+    if p.returncode != 0 or not lines:
+        sys.exit("No pude obtener IPAD_SSH_PASS (ni del entorno ni de Infisical).")
+    return lines[-1].strip()
+
+
+def ssh_base():
+    return ["ssh",
+            "-o", "ControlMaster=auto", "-o", f"ControlPath={CONTROL_PATH}",
+            "-o", "ControlPersist=30m",
+            "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3",
+            "-o", "ConnectTimeout=6",
+            "-o", "PreferredAuthentications=password", "-o", "PubkeyAuthentication=no",
+            f"{USER}@{HOST}"]
+
+
+def master_alive():
+    p = subprocess.run(["ssh", "-O", "check", "-o", f"ControlPath={CONTROL_PATH}", f"{USER}@{HOST}"],
+                       capture_output=True)
+    return p.returncode == 0
+
+
+def run_remote(cmd, wait):
+    """Ejecuta cmd en el iPad. Reintenta mientras no haya conexion (255)."""
+    STATE.mkdir(parents=True, exist_ok=True)
+    CONTROL_DIR.mkdir(parents=True, exist_ok=True)
+    deadline = time.time() + wait
+    while True:
+        env = os.environ.copy()
+        prefix = []
+        if not master_alive():
+            env["SSHPASS"] = get_password()
+            prefix = ["sshpass", "-e"]
+        try:
+            p = subprocess.run(prefix + ssh_base() + [cmd], capture_output=True, text=True,
+                               env=env, timeout=60)
+        except subprocess.TimeoutExpired:
+            p = subprocess.CompletedProcess(cmd, 255, "", "timeout")
+        if p.returncode != 255 or time.time() >= deadline:
+            return p
+        time.sleep(3)
+
+
+def need_ok(p):
+    if p.returncode == 255:
+        sys.exit("iPad sin respuesta por SSH. Suele ser un corte de Wi-Fi (frecuente en este enlace); "
+                 "si no vuelve, el iPad pudo reiniciarse: reabre Amethyst y reintenta.")
+    return p
+
+
+def zx(req, wait):
+    code = REMOTE_ZX
+    p = need_ok(run_remote(f"python3 -c {shlex.quote(code)} {shlex.quote(json.dumps(req))}", wait))
+    if p.returncode == 3:
+        sys.exit("ZXTouch no responde en el iPad (SSH si). Probable respring o reinicio: "
+                 "si se reinicio, reabre Amethyst.")
+    if p.returncode != 0:
+        sys.exit(f"Fallo remoto ({p.returncode}): {(p.stderr or p.stdout).strip()}")
+    return json.loads(p.stdout.strip().splitlines()[-1])
+
+
+def jpeg_size(path):
+    data = path.read_bytes()
+    if data[:2] != b"\xff\xd8" or data[-2:] != b"\xff\xd9":
+        raise ValueError("JPEG incompleto")
+    i = 2
+    while i < len(data) - 9:
+        if data[i] != 0xFF:
+            i += 1
+            continue
+        m = data[i + 1]
+        if m in (0xC0, 0xC1, 0xC2):
+            return int.from_bytes(data[i + 7:i + 9], "big"), int.from_bytes(data[i + 5:i + 7], "big")
+        i += 2 + int.from_bytes(data[i + 2:i + 4], "big")
+    raise ValueError("sin cabecera SOF")
+
+
+def read_frame(retries=5):
+    if not FRAME.exists():
+        sys.exit("No hay fotograma. Inicia el espejo: ipadctl mirror start, y elige "
+                 f"'{MIRROR_NAME}' en Duplicar pantalla del iPad.")
+    for _ in range(retries):
+        try:
+            return jpeg_size(FRAME)
+        except ValueError:
+            time.sleep(0.3)   # multifilesink estaba escribiendo
+    sys.exit("El fotograma esta corrupto o incompleto.")
+
+
+# ---------------------------------------------------------------- comandos
+
+def cmd_status(a):
+    p = run_remote("echo ok", a.wait)
+    if p.returncode == 255:
+        print("ssh: SIN RESPUESTA")
+        return 2
+    print("ssh: ok")
+    try:
+        info = zx({"op": "info"}, a.wait)
+        b = info["battery"]
+        print(f"zxtouch: ok  orientacion={info['orientation']}  pantalla={info['screen'][0]}x{info['screen'][1]}")
+        print(f"bateria: {b.get('battery_level')}% ({b.get('battery_state_string')})")
+    except SystemExit as e:
+        print(f"zxtouch: {e}")
+    app = run_remote("/usr/bin/activator current-app", a.wait)
+    print(f"app: {app.stdout.strip() or '?'}")
+    mp = subprocess.run(["pgrep", "-x", "uxplay"], capture_output=True, text=True)
+    conn = subprocess.run(f"ss -tn 2>/dev/null | grep -c {shlex.quote(HOST)}", shell=True,
+                          capture_output=True, text=True).stdout.strip()
+    age = f"{time.time() - FRAME.stat().st_mtime:.0f}s" if FRAME.exists() else "sin fotograma"
+    print(f"espejo: uxplay={'corriendo' if mp.stdout.strip() else 'detenido'}  conexiones={conn}  ultimo_fotograma={age}")
+    return 0
+
+
+def cmd_unlock(a):
+    need_ok(run_remote("/usr/bin/activator send libactivator.lockscreen.dismiss", a.wait))
+    return 0
+
+
+def cmd_home(a):
+    need_ok(run_remote("/usr/bin/activator send libactivator.system.homebutton", a.wait))
+    return 0
+
+
+def cmd_open(a):
+    p = need_ok(run_remote(f"uiopen {shlex.quote(a.url)}", a.wait))
+    return p.returncode
+
+
+def cmd_app(a):
+    p = need_ok(run_remote("/usr/bin/activator current-app", a.wait))
+    print(p.stdout.strip())
+    return 0
+
+
+def cmd_run(a):
+    p = need_ok(run_remote(" ".join(a.command), a.wait))
+    sys.stdout.write(p.stdout)
+    sys.stderr.write(p.stderr)
+    return p.returncode
+
+
+def space_of(a):
+    return "raw" if a.raw else "norm" if a.norm else "frame"
+
+
+def cmd_tap(a):
+    req = {"op": "tap", "p": [a.x, a.y], "space": space_of(a), "hold": a.hold}
+    if req["space"] == "frame":
+        req["fw"] = read_frame()[0]
+    r = zx(req, a.wait)
+    log(f"tap -> raw {r['raw']}  (orientacion {r['orientation']})")
+    return 0
+
+
+def cmd_swipe(a):
+    req = {"op": "swipe", "p1": [a.x1, a.y1], "p2": [a.x2, a.y2], "space": space_of(a), "dur": a.dur}
+    if req["space"] == "frame":
+        req["fw"] = read_frame()[0]
+    r = zx(req, a.wait)
+    log(f"swipe -> raw {r['raw']}  (orientacion {r['orientation']})")
+    return 0
+
+
+def cmd_shot(a):
+    if a.native:
+        need_ok(run_remote("/usr/bin/activator send libactivator.system.take-screenshot", a.wait))
+        time.sleep(3)
+        p = need_ok(run_remote("ls -t /var/mobile/Media/DCIM/100APPLE | head -1", a.wait))
+        name = p.stdout.strip()
+        out = pathlib.Path(a.output or STATE / f"native-{time.strftime('%Y%m%d-%H%M%S')}.png")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        env = dict(os.environ, SSHPASS=get_password())
+        subprocess.run(["sshpass", "-e", "scp", "-O", "-o", f"ControlPath={CONTROL_PATH}",
+                        f"{USER}@{HOST}:/var/mobile/Media/DCIM/100APPLE/{name}", str(out)],
+                       check=True, env=env)
+        log("(captura nativa: queda tambien en Fotos del iPad)")
+        print(out)
+        return 0
+    w, h = read_frame()
+    out = pathlib.Path(a.output or STATE / f"shot-{time.strftime('%Y%m%d-%H%M%S')}.jpg")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(FRAME, out)
+    age = time.time() - FRAME.stat().st_mtime
+    log(f"{w}x{h}  fotograma de hace {age:.0f}s"
+        + ("  (la pantalla no ha cambiado o el espejo se detuvo)" if age > a.max_age else ""))
+    print(out)
+    return 0
+
+
+def cmd_mirror(a):
+    STATE.mkdir(parents=True, exist_ok=True)
+    running = subprocess.run(["pgrep", "-x", "uxplay"], capture_output=True, text=True).stdout.split()
+    if a.action == "stop":
+        if running:
+            subprocess.run(["pkill", "-x", "uxplay"])
+            print("uxplay detenido")
+        else:
+            print("uxplay no estaba corriendo")
+        return 0
+    if a.action == "status":
+        print("corriendo" if running else "detenido")
+        return 0
+    if running:
+        print("uxplay ya esta corriendo")
+        return 0
+    pipeline = ("videoconvert ! videorate ! video/x-raw,framerate=1/1 ! "
+                f"jpegenc quality=85 ! multifilesink location={FRAME}")
+    cmd = ["stdbuf", "-oL", "-eL", "uxplay", "-n", MIRROR_NAME, "-as", "0", "-vsync", "no", "-vs", pipeline]
+    logf = open(STATE / "uxplay.log", "w")
+    subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT, start_new_session=True)
+    time.sleep(3)
+    ok = subprocess.run(["pgrep", "-x", "uxplay"], capture_output=True).returncode == 0
+    print(f"uxplay {'iniciado' if ok else 'FALLO (ver ' + str(STATE / 'uxplay.log') + ')'}; "
+          f"en el iPad: Centro de control > Duplicar pantalla > {MIRROR_NAME}")
+    return 0 if ok else 1
+
+
+def main():
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--wait", type=int, default=90, help="segundos reintentando la conexion SSH (def. 90)")
+    coord = argparse.ArgumentParser(add_help=False)
+    g = coord.add_mutually_exclusive_group()
+    g.add_argument("--raw", action="store_true", help="coordenadas crudas de ZXTouch (px, iPad en vertical)")
+    g.add_argument("--norm", action="store_true", help="coordenadas normalizadas 0..1 de la vista actual")
+
+    ap = argparse.ArgumentParser(prog="ipadctl", description=__doc__.split("\n\n")[0])
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("status", parents=[common], help="estado del iPad y del espejo").set_defaults(f=cmd_status)
+    sub.add_parser("unlock", parents=[common], help="quita la pantalla de bloqueo (Activator)").set_defaults(f=cmd_unlock)
+    sub.add_parser("home", parents=[common], help="boton Inicio (Activator)").set_defaults(f=cmd_home)
+    sub.add_parser("app", parents=[common], help="app en primer plano").set_defaults(f=cmd_app)
+    s = sub.add_parser("open", parents=[common], help="abre una URL en Safari")
+    s.add_argument("url"); s.set_defaults(f=cmd_open)
+    s = sub.add_parser("tap", parents=[common, coord], help="toque en x y (coordenadas de la imagen de shot)")
+    s.add_argument("x", type=float); s.add_argument("y", type=float)
+    s.add_argument("--hold", type=float, default=0.08, help="segundos que dura el toque"); s.set_defaults(f=cmd_tap)
+    s = sub.add_parser("swipe", parents=[common, coord], help="deslizar de (x1,y1) a (x2,y2)")
+    for n in ("x1", "y1", "x2", "y2"):
+        s.add_argument(n, type=float)
+    s.add_argument("--dur", type=float, default=0.4, help="duracion en segundos"); s.set_defaults(f=cmd_swipe)
+    s = sub.add_parser("shot", parents=[common], help="guarda la pantalla (ultimo fotograma del espejo)")
+    s.add_argument("-o", "--output"); s.add_argument("--max-age", type=float, default=30)
+    s.add_argument("--native", action="store_true", help="usar captura de Activator (sin espejo; deja foto en el iPad)")
+    s.set_defaults(f=cmd_shot)
+    s = sub.add_parser("mirror", help="espejo AirPlay (UxPlay sin ventana)")
+    s.add_argument("action", choices=["start", "stop", "status"]); s.set_defaults(f=cmd_mirror)
+    s = sub.add_parser("run", parents=[common], help="ejecuta un comando en el iPad")
+    s.add_argument("command", nargs=argparse.REMAINDER); s.set_defaults(f=cmd_run)
+
+    a = ap.parse_args()
+    sys.exit(a.f(a))
+
+
+if __name__ == "__main__":
+    main()
