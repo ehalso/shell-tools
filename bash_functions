@@ -50,22 +50,80 @@ workspace() {
   gcloud config configurations activate "$selected"
 }
 
-# @desc Lista hosts SSH o conecta al seleccionado
+# hosts-ssh (hs) v1.1
+#   hs            lista numerada, agrupada por sección de ~/.ssh/config
+#   hs -l         selector con búsqueda (requiere fzf)
+#   hs N          conecta al número N de la lista
+#   hs texto      alias exacto (incluye nombres extra de la línea Host) -> conecta;
+#                 si filtra a uno solo, conecta; a varios, abre el selector filtrado;
+#                 si no coincide con ninguno, lo pasa tal cual a ssh (ej. root@1.2.3.4)
+#
+# El grupo de cada host sale del encabezado de sección del config: un comentario
+# entre dos líneas "# =====", cuya primera palabra es el grupo (ej. "# TRV — Trivasa").
+# Solo se lista el primer nombre de cada línea Host; los alias extra siguen
+# funcionando con ssh. Se omiten comodines y alias que apuntan a github.com.
+# Los helpers usan "function _x {" para que helpme no los liste.
+
+# Hosts como "grupo<TAB>alias<TAB>hostname<TAB>user", ordenados por grupo y alias.
+function _hosts_ssh_entries {
+  awk '
+    function flush() {
+      if (name != "" && name !~ /[*?!]/ && tolower(hn == "" ? name : hn) !~ /(^|\.)github\.com$/)
+        printf "%s\t%s\t%s\t%s\n", hgrp, name, (hn != "" ? hn : name), usr
+      name = ""; hn = ""; usr = ""
+    }
+    /^# *=+ *$/            { if (cand != "") { grp = cand; cand = "" } sep = 1; next }
+    sep && /^# *[^ ]/      { cand = $2; sep = 0; next }
+                           { sep = 0; cand = "" }
+    tolower($1) == "host"  { flush(); name = $2; hgrp = grp; next }
+    tolower($1) == "match" { flush(); next }
+    tolower($1) == "hostname" { hn = $2 }
+    tolower($1) == "user"     { usr = $2 }
+    END { flush() }
+  ' ~/.ssh/config | sort -f -t$'\t' -k1,1 -k2,2
+}
+
+function _hosts_ssh_list {
+  _hosts_ssh_entries | awk -F'\t' '
+    $1 != last { printf "%s\n", $1; last = $1 }
+    { printf "  %2d) %-20s %s%s\n", NR, $2, ($4 != "" ? $4 "@" : ""), $3 }'
+}
+
+function _hosts_ssh_pick {
+  _hosts_ssh_entries | awk -F'\t' '{ printf "%-20s %-4s %s%s\n", $2, $1, ($4 != "" ? $4 "@" : ""), $3 }' |
+    fzf --query="$1" --height=60% --reverse --no-sort --prompt='ssh> ' \
+        --header='Enter conecta · Esc sale' \
+        --preview='ssh -G {1} 2>/dev/null | grep -E "^(hostname|user|port|identityfile|proxyjump) "' \
+        --preview-window=down,6 |
+    awk '{ print $1 }'
+}
+
+# @desc Lista hosts SSH agrupados (hs), selector con búsqueda (hs -l) o conecta por número/nombre
 hosts-ssh() {
-  local entries=($(grep "^Host " ~/.ssh/config | awk '{print $2}' | grep -v '^\*'))
+  local target matches
   if [ -z "$1" ]; then
-    echo "Hosts disponibles:"
-    for i in "${!entries[@]}"; do
-      echo "  $((i+1))) ${entries[$i]}"
-    done
-    return
-  fi
-  if [[ "$1" =~ ^[0-9]+$ ]]; then
-    local idx=$(($1 - 1))
-    ssh "${entries[$idx]}"
+    _hosts_ssh_list; return
+  elif [ "$1" = "-l" ]; then
+    command -v fzf >/dev/null || { echo "hs -l requiere fzf" >&2; return 1; }
+    target=$(_hosts_ssh_pick)
+  elif [[ "$1" =~ ^[0-9]+$ ]]; then
+    target=$(_hosts_ssh_entries | sed -n "${1}p" | cut -f2)
+    [ -z "$target" ] && { echo "No hay host número $1 (hs para ver la lista)" >&2; return 1; }
+  elif awk -v h="$1" 'tolower($1)=="host" { for (i = 2; i <= NF; i++) if ($i == h) f = 1 } END { exit !f }' ~/.ssh/config; then
+    target="$1"
   else
-    ssh "$1"
+    matches=$(_hosts_ssh_entries | cut -f2 | grep -i -F -- "$1")
+    if [ -z "$matches" ]; then
+      target="$1"
+    elif [ "$(printf '%s\n' "$matches" | wc -l)" -eq 1 ]; then
+      target="$matches"
+    elif command -v fzf >/dev/null; then
+      target=$(_hosts_ssh_pick "$1")
+    else
+      printf '%s\n' "$matches"; return
+    fi
   fi
+  [ -n "$target" ] && { echo "→ ssh $target"; ssh "$target"; }
 }
 
 
