@@ -5,14 +5,17 @@
 # lo pueda invocar el shell no interactivo de Claude Code.
 #
 #   sec [add] [NOMBRE...]  con nombre; sin nombres: anónimo (S1, S2...) + pista opcional
-#   sec -m NOMBRE          valor multilínea (llave PEM/SSH): pegar y terminar con Ctrl+D, sin eco
+#   sec -m NOMBRE          valor multilínea (llave PEM/SSH): pegar y terminar con Ctrl+D
 #   sec ls                 nombre <TAB> pista (nunca valores)
 #   sec rm [NOMBRE...]     borra esos; sin argumentos borra todos
 #   sec run CMD...         corre CMD con todos los secretos como variables de entorno
+#   (el valor se ve al escribirlo; SEC_OCULTO=1 sec ... lo oculta)
 #   sec dir                imprime el directorio de los archivos (para NOMBRE=@./archivo del CLI)
 set -u
 DIR="${XDG_RUNTIME_DIR:-/dev/shm}/sec-$USER"
 NAME_RE='^[A-Za-z_][A-Za-z0-9_]*$'
+# El valor se ve mientras lo escribes (para no dudar de qué guardas); SEC_OCULTO=1 lo oculta.
+RS=(); [ "${SEC_OCULTO:-0}" = 1 ] && RS=(-s)
 
 add() {
   local n v h i
@@ -20,17 +23,19 @@ add() {
   if (($#)); then
     for n in "$@"; do
       [[ $n =~ $NAME_RE ]] || { echo "nombre inválido: $n" >&2; return 1; }
-      read -rsp "$n: " v; echo
+      read -r "${RS[@]}" -p "$n: " v; [ "${SEC_OCULTO:-0}" = 1 ] && echo
+      echo "  guardado $n (${#v} caracteres)" >&2
       (umask 077; printf '%s' "$v" > "$DIR/$n")
     done
   else
     while :; do
       i=1; while [ -e "$DIR/S$i" ]; do i=$((i+1)); done
-      read -rsp "S$i (Enter vacío = terminar): " v; echo
+      read -r "${RS[@]}" -p "S$i (Enter vacío = terminar): " v; [ "${SEC_OCULTO:-0}" = 1 ] && echo
       [ -z "$v" ] && break
       read -rp "  pista (opcional, NO el secreto): " h
       (umask 077; printf '%s' "$v" > "$DIR/S$i"
        [ -n "$h" ] && printf '%s' "$h" > "$DIR/.pista/S$i")
+      echo "  guardado S$i (${#v} caracteres)" >&2
     done
   fi
 }
@@ -39,11 +44,11 @@ multi() {
   local n=${1:-}
   [[ $n =~ $NAME_RE ]] || { echo "uso: sec -m NOMBRE (nombre válido)" >&2; return 1; }
   (umask 077; mkdir -p "$DIR/.pista")
-  echo "Pega el valor de $n y termina con Ctrl+D (sin eco):" >&2
-  trap 'stty echo 2>/dev/null' EXIT
-  stty -echo 2>/dev/null
+  echo "Pega el valor de $n y termina con Ctrl+D:" >&2
+  if [ "${SEC_OCULTO:-0}" = 1 ]; then trap 'stty echo 2>/dev/null' EXIT; stty -echo 2>/dev/null; fi
   (umask 077; cat > "$DIR/$n")
-  stty echo 2>/dev/null; trap - EXIT; echo >&2
+  if [ "${SEC_OCULTO:-0}" = 1 ]; then stty echo 2>/dev/null; trap - EXIT; echo >&2; fi
+  echo "  guardado $n ($(wc -c < "$DIR/$n") bytes)" >&2
 }
 
 ls_() {
