@@ -12,3 +12,7 @@ else
 fi
 
 echo "✓ Instalación completa. Corre: source ~/.bashrc"
+
+# sec: script de secretos efímeros, enlazado en ~/.local/bin para que también lo vea el shell no interactivo (Claude Code)
+mkdir -p ~/.local/bin
+ln -sfn "$DOTFILES_DIR/sec/sec" ~/.local/bin/sec && echo "✓ sec enlazado en ~/.local/bin"

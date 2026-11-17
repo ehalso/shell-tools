@@ -11,3 +11,8 @@ alias hv='harlequin-vertical'
 alias sd='systemctl poweroff'
 alias rb='systemctl reboot'
 alias lou='loginctl terminate-session "$XDG_SESSION_ID"'
+
+# Secretos efímeros (script ~/.dotfiles/sec/sec, enlazado en ~/.local/bin)
+alias secls='sec ls'
+alias secrm='sec rm'
+alias secrun='sec run'

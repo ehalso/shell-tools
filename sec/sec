@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# sec — secretos efímeros en RAM para pasarlos a Claude Code sin que el valor
+# pase por el chat. Los valores viven en $XDG_RUNTIME_DIR (o /dev/shm), 600,
+# y desaparecen al reiniciar. Es un script (no una función) para que también
+# lo pueda invocar el shell no interactivo de Claude Code.
+#
+#   sec [add] [NOMBRE...]  con nombre; sin nombres: anónimo (S1, S2...) + pista opcional
+#   sec -m NOMBRE          valor multilínea (llave PEM/SSH): pegar y terminar con Ctrl+D, sin eco
+#   sec ls                 nombre <TAB> pista (nunca valores)
+#   sec rm [NOMBRE...]     borra esos; sin argumentos borra todos
+#   sec run CMD...         corre CMD con todos los secretos como variables de entorno
+#   sec dir                imprime el directorio de los archivos (para NOMBRE=@./archivo del CLI)
+set -u
+DIR="${XDG_RUNTIME_DIR:-/dev/shm}/sec-$USER"
+NAME_RE='^[A-Za-z_][A-Za-z0-9_]*$'
+
+add() {
+  local n v h i
+  (umask 077; mkdir -p "$DIR/.pista")
+  if (($#)); then
+    for n in "$@"; do
+      [[ $n =~ $NAME_RE ]] || { echo "nombre inválido: $n" >&2; return 1; }
+      read -rsp "$n: " v; echo
+      (umask 077; printf '%s' "$v" > "$DIR/$n")
+    done
+  else
+    while :; do
+      i=1; while [ -e "$DIR/S$i" ]; do i=$((i+1)); done
+      read -rsp "S$i (Enter vacío = terminar): " v; echo
+      [ -z "$v" ] && break
+      read -rp "  pista (opcional, NO el secreto): " h
+      (umask 077; printf '%s' "$v" > "$DIR/S$i"
+       [ -n "$h" ] && printf '%s' "$h" > "$DIR/.pista/S$i")
+    done
+  fi
+}
+
+multi() {
+  local n=${1:-}
+  [[ $n =~ $NAME_RE ]] || { echo "uso: sec -m NOMBRE (nombre válido)" >&2; return 1; }
+  (umask 077; mkdir -p "$DIR/.pista")
+  echo "Pega el valor de $n y termina con Ctrl+D (sin eco):" >&2
+  trap 'stty echo 2>/dev/null' EXIT
+  stty -echo 2>/dev/null
+  (umask 077; cat > "$DIR/$n")
+  stty echo 2>/dev/null; trap - EXIT; echo >&2
+}
+
+ls_() {
+  local f n
+  for f in "$DIR"/*; do
+    [ -f "$f" ] || continue
+    n=$(basename "$f")
+    printf '%s\t%s\n' "$n" "$(cat "$DIR/.pista/$n" 2>/dev/null)"
+  done
+}
+
+rm_() {
+  local n
+  if (($#)); then
+    for n in "$@"; do
+      [[ $n =~ $NAME_RE ]] || { echo "nombre inválido: $n" >&2; return 1; }
+      rm -f -- "$DIR/$n" "$DIR/.pista/$n"
+    done
+  else
+    rm -rf -- "$DIR"
+  fi
+}
+
+run() {
+  (($#)) || { echo "uso: sec run CMD..." >&2; return 2; }
+  local f
+  for f in "$DIR"/*; do
+    [ -f "$f" ] && export "$(basename "$f")=$(<"$f")"
+  done
+  exec "$@"
+}
+
+cmd="${1:-add}"
+case "$cmd" in
+  ls)  shift; ls_ "$@" ;;
+  rm)  shift; rm_ "$@" ;;
+  run) shift; run "$@" ;;
+  dir) echo "$DIR" ;;
+  -m)  shift; multi "$@" ;;
+  add) shift; add "$@" ;;
+  -h|--help|help) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0" ;;
+  *)   add "$@" ;;   # sec NOMBRE ... (atajo de "sec add NOMBRE ...")
+esac
