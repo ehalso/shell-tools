@@ -12,7 +12,7 @@ alias sd='systemctl poweroff'
 alias rb='systemctl reboot'
 alias lou='loginctl terminate-session "$XDG_SESSION_ID"'
 
-# Secretos efímeros (script ~/.dotfiles/secret/secret, enlazado en ~/.local/bin)
-alias secls='secret ls'
-alias secrm='secret rm'
-alias secrun='secret run'
+# Secretos efímeros (script ~/.dotfiles/cred/cred, enlazado en ~/.local/bin)
+alias credls='cred ls'
+alias credrm='cred rm'
+alias credrun='cred run'
