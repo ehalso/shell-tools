@@ -5,3 +5,7 @@ Funciones y aliases de bash sincronizados entre VMs
 - `ipadctl/` — control del iPad por SSH (ver su README).
 - `sec/` — secretos efímeros en RAM para pasarlos a Claude Code sin que el valor pase por el chat
   (`sec`, `sec ls`, `sec rm`, `sec run`, `sec dir`, `sec -m`; aliases `secls`/`secrm`/`secrun`). `install.sh` lo enlaza en `~/.local/bin/sec`.
+
+## Sincronización
+- `install.sh` (una vez por host): source en `~/.bashrc`, enlaces (`sec`), hook `post-commit` que hace push y cron `*/20` con `pull.sh` (marca `# dotfiles-pull`, log en `~/.dotfiles-pull.log`).
+- `pull.sh`: `git pull --ff-only` y, si bajó cambios, `install.sh --links-only`. Las funciones/aliases nuevos aplican en shells nuevos o con `source ~/.bashrc`.
