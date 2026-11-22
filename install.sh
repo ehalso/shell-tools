@@ -10,15 +10,13 @@ install_links() {
     # cred: enlazado en ~/.local/bin para que también lo vea el shell no interactivo (Claude Code).
     # Se llama "cred" y no "sec" porque "sec" choca con el paquete apt `sec` (Simple Event Correlator).
     mkdir -p ~/.local/bin
-    # Limpia los enlaces viejos (sec, secret) solo si apuntan a este repo (nunca toca el del paquete apt)
-    for old in sec secret; do
+    # Limpia los enlaces viejos (sec, secret, unveil) solo si apuntan a este repo (nunca toca el del paquete apt)
+    for old in sec secret unveil; do
         if [ -L ~/.local/bin/$old ] && [[ "$(readlink ~/.local/bin/$old)" == "$DOTFILES_DIR/"* ]]; then
             rm ~/.local/bin/$old && echo "✓ enlace viejo ~/.local/bin/$old eliminado"
         fi
     done
     ln -sfn "$DOTFILES_DIR/cred/cred" ~/.local/bin/cred && echo "✓ cred enlazado en ~/.local/bin"
-    # unveil: lee/muestra un secreto de Infisical (solo humanos). "unveil" y no "sec"/"peek": esos chocan con paquetes apt.
-    ln -sfn "$DOTFILES_DIR/unveil/unveil" ~/.local/bin/unveil && echo "✓ unveil enlazado en ~/.local/bin"
 }
 
 if [ "${1:-}" = "--links-only" ]; then
